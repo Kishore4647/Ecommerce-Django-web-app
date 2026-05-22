@@ -1,0 +1,92 @@
+version: '3.9'
+
+# docker-compose lets you run all services (Django + Redis + MySQL + Celery)
+# with a single command: docker-compose up
+
+services:
+  # ─── MySQL Database ───────────────────────────────────────────────────────────
+  db:
+    image: mysql:8.0
+    container_name: ecommerce_db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: ecommerce_db
+      MYSQL_USER: ecommerce_user
+      MYSQL_PASSWORD: ecommerce_pass
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 10s
+      retries: 5
+
+  # ─── Redis (Celery broker + result backend) ───────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: ecommerce_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  # ─── Django API ───────────────────────────────────────────────────────────────
+  web:
+    build:
+      context: ./backend
+    container_name: ecommerce_web
+    restart: unless-stopped
+    command: >
+      sh -c "python manage.py migrate &&
+             python manage.py runserver 0.0.0.0:8000"
+    volumes:
+      - ./backend:/app          # Mount code so changes reflect without rebuild
+      - media_files:/app/media
+    ports:
+      - "8000:8000"
+    environment:
+      - SECRET_KEY=local-dev-secret-key-not-for-production
+      - DEBUG=True
+      - DATABASE_URL=mysql://ecommerce_user:ecommerce_pass@db:3306/ecommerce_db
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  # ─── Celery Worker ───────────────────────────────────────────────────────────
+  celery:
+    build:
+      context: ./backend
+    container_name: ecommerce_celery
+    restart: unless-stopped
+    command: celery -A ecommerce worker --loglevel=info
+    volumes:
+      - ./backend:/app
+    environment:
+      - SECRET_KEY=local-dev-secret-key-not-for-production
+      - DEBUG=True
+      - DATABASE_URL=mysql://ecommerce_user:ecommerce_pass@db:3306/ecommerce_db
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - web
+      - redis
+
+  # ─── Frontend (React) ────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+    container_name: ecommerce_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+    depends_on:
+      - web
+
+volumes:
+  mysql_data:
+  media_files:
